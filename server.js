@@ -29,16 +29,22 @@ async function kvCommand(...args) {
 
 async function loadDB() {
   const data = await kvCommand('GET', 'yukber_db');
-  if (!data) return;
+  if (!data) return; // no Redis or empty — keep seed data
   try {
     const saved = JSON.parse(data);
     if (saved.users) Object.assign(db.users, saved.users);
     if (saved.otps)  Object.assign(db.otps,  saved.otps);
     if (saved.cars)  Object.assign(db.cars,  saved.cars);
-    if (saved.routes)             db.routes             = saved.routes;
-    if (saved.passengerRequests)  db.passengerRequests  = saved.passengerRequests;
-    if (saved.parcels)            db.parcels            = saved.parcels;
-    if (saved.reviews)            db.reviews            = saved.reviews;
+    // For arrays: merge saved items, preserving seeds
+    const mergeArr = (dest, src, key) => {
+      if (!src || !src.length) return;
+      const ids = new Set(dest.map(x => x[key]));
+      dest.push(...src.filter(x => !ids.has(x[key])));
+    };
+    mergeArr(db.routes,            saved.routes,            'id');
+    mergeArr(db.passengerRequests, saved.passengerRequests, 'id');
+    mergeArr(db.parcels,           saved.parcels,           'id');
+    mergeArr(db.reviews,           saved.reviews,           'id');
   } catch (e) { console.error('DB parse error:', e.message); }
 }
 
@@ -140,6 +146,23 @@ db.cars[demoUserId] = [
     photos: [], isPrimary: true, isActive: true,
     note: 'Чистый, кондиционер', createdAt: new Date().toISOString(),
   }
+];
+
+// Seed demo passengers
+const passengerIds = ['pass-001', 'pass-002', 'pass-003'];
+db.users['+998901111111'] = { id: passengerIds[0], firstName: 'Камола', lastName: 'Юсупова', phone: '+998901111111', email: null, avatar: null, role: 'passenger', isVerified: true, rating: 4.5, tripsCount: 5, createdAt: new Date().toISOString() };
+db.users['+998902222222'] = { id: passengerIds[1], firstName: 'Жасур', lastName: 'Рахимов',  phone: '+998902222222', email: null, avatar: null, role: 'passenger', isVerified: true, rating: 4.7, tripsCount: 12, createdAt: new Date().toISOString() };
+db.users['+998903333333'] = { id: passengerIds[2], firstName: 'Нилуфар', lastName: 'Ахмедова', phone: '+998903333333', email: null, avatar: null, role: 'passenger', isVerified: true, rating: 5.0, tripsCount: 3, createdAt: new Date().toISOString() };
+db.cars[passengerIds[0]] = [];
+db.cars[passengerIds[1]] = [];
+db.cars[passengerIds[2]] = [];
+
+const today = new Date();
+const fmt = (d) => d.toISOString().split('T')[0];
+db.passengerRequests = [
+  { id: 'req-001', passengerId: passengerIds[0], from: 'Ташкент', to: 'Самарканд', date: fmt(today), timeFrom: '08:00', timeTo: '10:00', status: 'pending', savedSearch: false, createdAt: new Date().toISOString() },
+  { id: 'req-002', passengerId: passengerIds[1], from: 'Ташкент', to: 'Фергана',   date: fmt(new Date(today.getTime() + 86400000)), timeFrom: '09:00', timeTo: null, status: 'pending', savedSearch: false, createdAt: new Date().toISOString() },
+  { id: 'req-003', passengerId: passengerIds[2], from: 'Самарканд', to: 'Бухара',  date: fmt(today), timeFrom: '14:00', timeTo: '18:00', status: 'pending', savedSearch: false, createdAt: new Date().toISOString() },
 ];
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
