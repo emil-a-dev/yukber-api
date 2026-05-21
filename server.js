@@ -1,6 +1,5 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
-const formidable = require('formidable');
 const { v4: uuidv4 } = require('uuid');
 const cors = require('cors');
 
@@ -12,29 +11,30 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// Parse multipart form (for file uploads)
+// Lazy-load formidable only when needed (avoids top-level crash on Vercel)
 function parseForm(req) {
   return new Promise((resolve, reject) => {
     if (!req.headers['content-type'] || !req.headers['content-type'].includes('multipart')) {
       return resolve({ fields: req.body || {}, files: {} });
     }
-    const form = formidable({ maxFileSize: 10 * 1024 * 1024, keepExtensions: true });
-    form.parse(req, (err, fields, files) => {
-      if (err) return reject(err);
-      // formidable v3: fields are arrays, unwrap single values
-      const flat = {};
-      for (const [k, v] of Object.entries(fields)) flat[k] = Array.isArray(v) ? v[0] : v;
-      // files may be arrays
-      const flatFiles = {};
-      for (const [k, v] of Object.entries(files)) flatFiles[k] = Array.isArray(v) ? v : [v];
-      resolve({ fields: flat, files: flatFiles });
-    });
+    try {
+      const formidable = require('formidable');
+      const form = formidable({ maxFileSize: 10 * 1024 * 1024, keepExtensions: true });
+      form.parse(req, (err, fields, files) => {
+        if (err) return reject(err);
+        const flat = {};
+        for (const [k, v] of Object.entries(fields)) flat[k] = Array.isArray(v) ? v[0] : v;
+        const flatFiles = {};
+        for (const [k, v] of Object.entries(files)) flatFiles[k] = Array.isArray(v) ? v : [v];
+        resolve({ fields: flat, files: flatFiles });
+      });
+    } catch (e) { reject(e); }
   });
 }
 
 async function readFileBuffer(f) {
   const fs = require('fs');
-  return fs.promises.readFile(f.filepath);
+  return fs.promises.readFile(f.filepath || f.path);
 }
 
 // ─── In-memory DB ──────────────────────────────────────────────────────────────
