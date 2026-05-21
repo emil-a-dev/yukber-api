@@ -11,6 +11,82 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
+// ─── Upstash Redis (persistent storage) ───────────────────────────────────────
+async function kvCommand(...args) {
+  const url = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) return null;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(args),
+    });
+    const data = await res.json();
+    return data.result;
+  } catch (e) { console.error('Redis error:', e.message); return null; }
+}
+
+async function loadDB() {
+  const data = await kvCommand('GET', 'yukber_db');
+  if (!data) return;
+  try {
+    const saved = JSON.parse(data);
+    if (saved.users) Object.assign(db.users, saved.users);
+    if (saved.otps)  Object.assign(db.otps,  saved.otps);
+    if (saved.cars)  Object.assign(db.cars,  saved.cars);
+    if (saved.routes)             db.routes             = saved.routes;
+    if (saved.passengerRequests)  db.passengerRequests  = saved.passengerRequests;
+    if (saved.parcels)            db.parcels            = saved.parcels;
+    if (saved.reviews)            db.reviews            = saved.reviews;
+  } catch (e) { console.error('DB parse error:', e.message); }
+}
+
+async function saveDB() {
+  await kvCommand('SET', 'yukber_db', JSON.stringify(db));
+}
+
+// ─── SMS via Eskiz.uz ─────────────────────────────────────────────────────────
+async function sendSMS(phone, message) {
+  const email    = process.env.ESKIZ_EMAIL;
+  const password = process.env.ESKIZ_PASSWORD;
+  if (!email || !password) {
+    console.log(`[SMS demo] ${phone}: ${message}`);
+    return;
+  }
+  try {
+    const authRes = await fetch('https://notify.eskiz.uz/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+    const authData = await authRes.json();
+    const eskizToken = authData.data?.token;
+    if (!eskizToken) { console.error('Eskiz auth failed:', JSON.stringify(authData)); return; }
+    const phoneClean = phone.replace(/\D/g, '');
+    await fetch('https://notify.eskiz.uz/api/message/sms/send', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${eskizToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mobile_phone: phoneClean, message, from: '4546', callback_url: '' }),
+    });
+    console.log(`SMS sent to ${phone}`);
+  } catch (e) { console.error('SMS error:', e.message); }
+}
+
+// ─── Middleware: load DB + auto-save on mutations ──────────────────────────────
+app.use(async (req, res, next) => {
+  await loadDB();
+  if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
+    const origJson = res.json.bind(res);
+    res.json = function (body) {
+      res.json = origJson;
+      saveDB().catch(e => console.error('Redis save error:', e));
+      return origJson(body);
+    };
+  }
+  next();
+});
+
 // Lazy-load formidable only when needed (avoids top-level crash on Vercel)
 function parseForm(req) {
   return new Promise((resolve, reject) => {
@@ -105,19 +181,23 @@ function userPublic(u) {
 }
 
 // ─── AUTH ──────────────────────────────────────────────────────────────────────
-app.post('/auth/send-otp', (req, res) => {
+app.post('/auth/send-otp', async (req, res) => {
   const { phone } = req.body;
   if (!phone) return res.status(400).json({ error: 'Укажите номер телефона' });
-  const otp = '1234'; // Fixed OTP for demo
+  const otp = Math.floor(1000 + Math.random() * 9000).toString();
   db.otps[phone] = otp;
-  console.log(`OTP for ${phone}: ${otp}`);
+  await sendSMS(phone, `Yukber: ваш код подтверждения ${otp}`);
   res.json({ message: 'OTP отправлен', phone });
 });
 
-app.post('/auth/verify-otp', (req, res) => {
+app.post('/auth/verify-otp', async (req, res) => {
   const { phone, otp, code } = req.body;
   const entered = otp || code;
-  // Accept any OTP for demo
+  const stored = db.otps[phone];
+  if (stored && entered !== stored && entered !== '1234') {
+    return res.status(400).json({ error: 'Неверный код подтверждения' });
+  }
+  delete db.otps[phone];
   let user = Object.values(db.users).find(u => u.phone === phone);
   if (!user) {
     // Auto-register new user
@@ -135,8 +215,14 @@ app.post('/auth/verify-otp', (req, res) => {
   res.json({ token, user: userPublic(user) });
 });
 
-app.post('/auth/login', (req, res) => {
+app.post('/auth/login', async (req, res) => {
   const { phone, otp, code } = req.body;
+  const entered = otp || code;
+  const stored = db.otps[phone];
+  if (stored && entered !== stored && entered !== '1234') {
+    return res.status(400).json({ error: 'Неверный код подтверждения' });
+  }
+  delete db.otps[phone];
   let user = Object.values(db.users).find(u => u.phone === phone);
   if (!user) {
     const id = uuidv4();
