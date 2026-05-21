@@ -18,8 +18,8 @@ function parseForm(req) {
       return resolve({ fields: req.body || {}, files: {} });
     }
     try {
-      const formidable = require('formidable');
-      const form = formidable({ maxFileSize: 10 * 1024 * 1024, keepExtensions: true });
+      const { Formidable } = require('formidable');
+      const form = new Formidable({ maxFileSize: 10 * 1024 * 1024, keepExtensions: true });
       form.parse(req, (err, fields, files) => {
         if (err) return reject(err);
         const flat = {};
