@@ -1,6 +1,6 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
-const multer = require('multer');
+const formidable = require('formidable');
 const { v4: uuidv4 } = require('uuid');
 const cors = require('cors');
 
@@ -9,13 +9,33 @@ const PORT = process.env.PORT || 3002;
 const JWT_SECRET = process.env.JWT_SECRET || 'yukber_secret_2026';
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
-});
+// Parse multipart form (for file uploads)
+function parseForm(req) {
+  return new Promise((resolve, reject) => {
+    if (!req.headers['content-type'] || !req.headers['content-type'].includes('multipart')) {
+      return resolve({ fields: req.body || {}, files: {} });
+    }
+    const form = formidable({ maxFileSize: 10 * 1024 * 1024, keepExtensions: true });
+    form.parse(req, (err, fields, files) => {
+      if (err) return reject(err);
+      // formidable v3: fields are arrays, unwrap single values
+      const flat = {};
+      for (const [k, v] of Object.entries(fields)) flat[k] = Array.isArray(v) ? v[0] : v;
+      // files may be arrays
+      const flatFiles = {};
+      for (const [k, v] of Object.entries(files)) flatFiles[k] = Array.isArray(v) ? v : [v];
+      resolve({ fields: flat, files: flatFiles });
+    });
+  });
+}
+
+async function readFileBuffer(f) {
+  const fs = require('fs');
+  return fs.promises.readFile(f.filepath);
+}
 
 // ─── In-memory DB ──────────────────────────────────────────────────────────────
 const db = {
@@ -183,14 +203,18 @@ app.put('/auth/update-profile', authMiddleware, (req, res) => {
   res.json({ user: userPublic(user) });
 });
 
-app.post('/auth/upload-avatar', authMiddleware, upload.single('avatar'), (req, res) => {
-  const user = Object.values(db.users).find(u => u.id === req.user.id);
-  if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
-  if (req.file) {
-    const b64 = req.file.buffer.toString('base64');
-    user.avatar = `data:${req.file.mimetype};base64,${b64}`;
-  }
-  res.json({ user: userPublic(user) });
+app.post('/auth/upload-avatar', authMiddleware, async (req, res) => {
+  try {
+    const user = Object.values(db.users).find(u => u.id === req.user.id);
+    if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+    const { files } = await parseForm(req);
+    const avatarFiles = files.avatar || [];
+    if (avatarFiles.length > 0) {
+      const buf = await readFileBuffer(avatarFiles[0]);
+      user.avatar = `data:${avatarFiles[0].mimetype || 'image/jpeg'};base64,${buf.toString('base64')}`;
+    }
+    res.json({ user: userPublic(user) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ─── USER ──────────────────────────────────────────────────────────────────────
@@ -210,36 +234,38 @@ app.get('/my-cars', authMiddleware, (req, res) => {
   res.json(cars);
 });
 
-app.post('/add-car', authMiddleware, upload.array('photos', 10), (req, res) => {
-  const { make, model, year, plate, seats, note } = req.body;
-  if (!make || !model) return res.status(400).json({ error: 'Укажите марку и модель автомобиля' });
-  if (!year) return res.status(400).json({ error: 'Укажите год выпуска' });
-  if (!plate) return res.status(400).json({ error: 'Укажите гос. номер' });
+app.post('/add-car', authMiddleware, async (req, res) => {
+  try {
+    const { fields, files } = await parseForm(req);
+    const { make, model, year, plate, seats, note } = fields;
+    if (!make || !model) return res.status(400).json({ error: 'Укажите марку и модель автомобиля' });
+    if (!year) return res.status(400).json({ error: 'Укажите год выпуска' });
+    if (!plate) return res.status(400).json({ error: 'Укажите гос. номер' });
 
-  const photoUrls = (req.files || []).map(f => {
-    const b64 = f.buffer.toString('base64');
-    return `data:${f.mimetype};base64,${b64}`;
-  });
+    const photoFiles = files.photos || files.photo || [];
+    const photoUrls = [];
+    for (const f of photoFiles) {
+      const buf = await readFileBuffer(f);
+      photoUrls.push(`data:${f.mimetype || 'image/jpeg'};base64,${buf.toString('base64')}`);
+    }
 
-  const car = {
-    id: uuidv4(),
-    userId: req.user.id,
-    make, model,
-    year: parseInt(year) || year,
-    plate: plate.toUpperCase(),
-    seats: parseInt(seats) || seats,
-    photos: photoUrls,
-    isPrimary: (db.cars[req.user.id] || []).length === 0,
-    isActive: true,
-    note: note || null,
-    createdAt: new Date().toISOString(),
-  };
+    const car = {
+      id: uuidv4(), userId: req.user.id,
+      make, model,
+      year: parseInt(year) || year,
+      plate: plate.toUpperCase(),
+      seats: parseInt(seats) || seats,
+      photos: photoUrls,
+      isPrimary: (db.cars[req.user.id] || []).length === 0,
+      isActive: true, note: note || null,
+      createdAt: new Date().toISOString(),
+    };
 
-  if (!db.cars[req.user.id]) db.cars[req.user.id] = [];
-  db.cars[req.user.id].push(car);
-
-  console.log(`Car added for user ${req.user.id}: ${make} ${model} ${year}`);
-  res.status(201).json(car);
+    if (!db.cars[req.user.id]) db.cars[req.user.id] = [];
+    db.cars[req.user.id].push(car);
+    console.log(`Car added for user ${req.user.id}: ${make} ${model} ${year}`);
+    res.status(201).json(car);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.delete('/car/:id', authMiddleware, (req, res) => {
@@ -338,16 +364,23 @@ app.get('/driver-saved-requests', authMiddleware, (req, res) => {
 });
 
 // ─── PARCELS ───────────────────────────────────────────────────────────────────
-app.post('/deliver-parcel', authMiddleware, upload.array('photos', 5), (req, res) => {
-  const parcel = {
-    id: uuidv4(), senderId: req.user.id,
-    ...req.body,
-    photos: (req.files || []).map(f => `data:${f.mimetype};base64,${f.buffer.toString('base64')}`),
-    status: 'pending',
-    createdAt: new Date().toISOString(),
-  };
-  db.parcels.push(parcel);
-  res.status(201).json(parcel);
+app.post('/deliver-parcel', authMiddleware, async (req, res) => {
+  try {
+    const { fields, files } = await parseForm(req);
+    const photoFiles = files.photos || files.photo || [];
+    const photoUrls = [];
+    for (const f of photoFiles) {
+      const buf = await readFileBuffer(f);
+      photoUrls.push(`data:${f.mimetype || 'image/jpeg'};base64,${buf.toString('base64')}`);
+    }
+    const parcel = {
+      id: uuidv4(), senderId: req.user.id,
+      ...fields, photos: photoUrls,
+      status: 'pending', createdAt: new Date().toISOString(),
+    };
+    db.parcels.push(parcel);
+    res.status(201).json(parcel);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ─── TRIPS ─────────────────────────────────────────────────────────────────────
