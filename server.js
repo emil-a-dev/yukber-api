@@ -72,7 +72,19 @@ function authMiddleware(req, res, next) {
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
   if (!token) return res.status(401).json({ error: 'Не авторизован' });
   try {
-    req.user = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET);
+    // Auto-recreate user after cold start (serverless stateless)
+    if (!db.users[decoded.phone]) {
+      const uid = decoded.id || uuidv4();
+      db.users[decoded.phone] = {
+        id: uid, firstName: 'Пользователь', lastName: null,
+        phone: decoded.phone, email: null, avatar: null,
+        role: decoded.role || 'passenger', isVerified: true,
+        rating: 5.0, tripsCount: 0, createdAt: new Date().toISOString(),
+      };
+      db.cars[uid] = [];
+    }
+    req.user = decoded;
     next();
   } catch {
     return res.status(401).json({ error: 'Токен недействителен' });
