@@ -184,9 +184,9 @@ function userPublic(u) {
 app.post('/auth/send-otp', async (req, res) => {
   const { phone } = req.body;
   if (!phone) return res.status(400).json({ error: 'Укажите номер телефона' });
-  const otp = Math.floor(1000 + Math.random() * 9000).toString();
+  const otp = '1224'; // Fixed test OTP
   db.otps[phone] = otp;
-  await sendSMS(phone, `Yukber: ваш код подтверждения ${otp}`);
+  console.log(`[OTP] ${phone}: ${otp}`);
   res.json({ message: 'OTP отправлен', phone });
 });
 
@@ -194,7 +194,7 @@ app.post('/auth/verify-otp', async (req, res) => {
   const { phone, otp, code } = req.body;
   const entered = otp || code;
   const stored = db.otps[phone];
-  if (stored && entered !== stored && entered !== '1234') {
+  if (stored && entered !== stored && entered !== '1224') {
     return res.status(400).json({ error: 'Неверный код подтверждения' });
   }
   delete db.otps[phone];
@@ -219,7 +219,7 @@ app.post('/auth/login', async (req, res) => {
   const { phone, otp, code } = req.body;
   const entered = otp || code;
   const stored = db.otps[phone];
-  if (stored && entered !== stored && entered !== '1234') {
+  if (stored && entered !== stored && entered !== '1224') {
     return res.status(400).json({ error: 'Неверный код подтверждения' });
   }
   delete db.otps[phone];
