@@ -377,8 +377,11 @@ app.post('/reviews', authMiddleware, (req, res) => {
 app.get('/', (req, res) => res.json({ status: 'ok', name: 'Yukber API', version: '1.0.0' }));
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
-app.listen(PORT, () => {
-  console.log(`Yukber API running on port ${PORT}`);
-});
+// Only listen when running directly (not on Vercel serverless)
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Yukber API running on port ${PORT}`);
+  });
+}
 
 module.exports = app;
